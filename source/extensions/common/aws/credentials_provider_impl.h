@@ -66,8 +66,9 @@ public:
       : MetadataCredentialsProviderBase(api, metadata_fetcher) {}
 
 private:
-  bool needsRefresh() override;
+  bool needsRefresh(int IMDSv2SessionTokenTime=0) override;
   void refresh() override;
+  void refreshIMDSv2(int IMDSv2SessionTokenTime);
   void extractCredentials(const std::string& credential_document_value);
   void fetchCredentialFromInstanceRole(const std::string& instance_role);
 };

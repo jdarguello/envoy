@@ -30,11 +30,14 @@ constexpr char AWS_CONTAINER_CREDENTIALS_RELATIVE_URI[] = "AWS_CONTAINER_CREDENT
 constexpr char AWS_CONTAINER_CREDENTIALS_FULL_URI[] = "AWS_CONTAINER_CREDENTIALS_FULL_URI";
 constexpr char AWS_CONTAINER_AUTHORIZATION_TOKEN[] = "AWS_CONTAINER_AUTHORIZATION_TOKEN";
 constexpr char AWS_EC2_METADATA_DISABLED[] = "AWS_EC2_METADATA_DISABLED";
+constexpr char AWS_EC2_METADATA_TOKEN[] = "X-aws-ec2-metadata-token";
+constexpr char AWS_EC2_METADATA_TOKEN_TIME[] = "X-aws-ec2-metadata-token-ttl-seconds";
 
 constexpr std::chrono::hours REFRESH_INTERVAL{1};
 constexpr std::chrono::seconds REFRESH_GRACE_PERIOD{5};
 constexpr char EC2_METADATA_HOST[] = "169.254.169.254:80";
 constexpr char CONTAINER_METADATA_HOST[] = "169.254.170.2:80";
+constexpr char SECURITY_TOKEN_IMDSv2[] = "/latest/api/token";
 constexpr char SECURITY_CREDENTIALS_PATH[] = "/latest/meta-data/iam/security-credentials";
 
 } // namespace
@@ -58,18 +61,42 @@ Credentials EnvironmentCredentialsProvider::getCredentials() {
   return Credentials(access_key_id, secret_access_key, session_token);
 }
 
-void MetadataCredentialsProviderBase::refreshIfNeeded() {
+void MetadataCredentialsProviderBase::refreshIfNeeded(int IMDSv2SessionTokenTime=0) {
   const Thread::LockGuard lock(lock_);
-  if (needsRefresh()) {
+  if (needsRefresh() && IMDSv2SessionTokenTime == 0) {
     refresh();
+  } else if (needsRefresh(IMDSv2SessionTokenTime)) {
+    refreshIMDSv2(IMDSv2SessionTokenTime);
   }
 }
 
-bool InstanceProfileCredentialsProvider::needsRefresh() {
-  return api_.timeSource().systemTime() - last_updated_ > REFRESH_INTERVAL;
+bool InstanceProfileCredentialsProvider::needsRefresh(int IMDSv2SessionTokenTime=0) {
+  if (IMDSv2SessionTokenTime == 0) {
+    return api_.timeSource().systemTime() - last_updated_ > REFRESH_INTERVAL;
+  } else {
+    std::chrono::hours REFRESH_TOKEN{IMDSv2SessionTokenTime};
+    return api_.timeSource().systemTime() - last_updated_ > REFRESH_TOKEN;
+  }
 }
 
-void InstanceProfileCredentialsProvider::refresh() {
+void InstanceProfileCredentialsProvider::refreshIMDSv2(int IMDSv2SessionTokenTime) {
+  ENVOY_LOG(debug, "Getting AWS credentials from the instance metadata - IMDSv2");
+
+  // First, get the session token
+  Http::RequestMessageImpl message;
+  message.headers().setMethod(Http::Headers::put().MethodValues.Put);
+  message.headers().setHost(EC2_METADATA_HOST);
+  message.headers().setPath(SECURITY_TOKEN_IMDSv2);
+  message.headers().setHeader(AWS_EC2_METADATA_TOKEN_TIME, IMDSv2SessionTokenTime);
+  const auto token_string = metadata_fetcher_(message);
+  if (!token_string) {
+    ENVOY_LOG(error, "Could not retrieve IMDSv2 session token");
+    return;
+  }
+  refresh(token_string.value());
+}
+
+void InstanceProfileCredentialsProvider::refresh(const std::string& token="") {
   ENVOY_LOG(debug, "Getting AWS credentials from the instance metadata");
 
   // First discover the Role of this instance
@@ -77,6 +104,9 @@ void InstanceProfileCredentialsProvider::refresh() {
   message.headers().setMethod(Http::Headers::get().MethodValues.Get);
   message.headers().setHost(EC2_METADATA_HOST);
   message.headers().setPath(SECURITY_CREDENTIALS_PATH);
+  if (token.length > 0) {
+    message.headers().setHeader(AWS_EC2_METADATA_TOKEN, token);
+  }
   const auto instance_role_string = metadata_fetcher_(message);
   if (!instance_role_string) {
     ENVOY_LOG(error, "Could not retrieve credentials listing from the instance metadata");
