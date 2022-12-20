@@ -74,7 +74,7 @@ bool InstanceProfileCredentialsProvider::needsRefresh(int IMDSv2SessionTokenTime
   if (IMDSv2SessionTokenTime == 0) {
     return api_.timeSource().systemTime() - last_updated_ > REFRESH_INTERVAL;
   } else {
-    std::chrono::hours REFRESH_TOKEN{IMDSv2SessionTokenTime};
+    std::chrono::hours REFRESH_TOKEN{(IMDSv2SessionTokenTime/3600.0)};
     return api_.timeSource().systemTime() - last_updated_ > REFRESH_TOKEN;
   }
 }
